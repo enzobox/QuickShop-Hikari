@@ -7,6 +7,7 @@ import com.ghostchu.quickshop.api.shop.ShopManager;
 import com.ghostchu.quickshop.api.shop.interaction.InteractionBehavior;
 import com.ghostchu.quickshop.api.shop.interaction.InteractionClick;
 import com.ghostchu.quickshop.api.shop.interaction.InteractionType;
+import com.ghostchu.quickshop.api.shop.permission.BuiltInShopPermission;
 import com.ghostchu.quickshop.shop.datatype.ShopSignPersistentDataType;
 import com.ghostchu.quickshop.shop.display.display.DisplayEntityItemManager;
 import com.ghostchu.quickshop.util.ExpiringSet;
@@ -16,6 +17,8 @@ import com.ghostchu.quickshop.util.Util;
 import com.ghostchu.quickshop.util.logger.Log;
 import com.ghostchu.simplereloadlib.ReloadResult;
 import com.ghostchu.simplereloadlib.ReloadStatus;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.tnemc.menu.core.manager.MenuManager;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -114,6 +117,22 @@ public class PlayerListener extends AbstractQSListener {
     if(shopSearched.getValue() == null) {
       Log.debug("Interaction: shopSearched value == null");
       return;
+    }
+
+    // boxmc: hit your own shop twice within 10 seconds to break it. A standing left-click on a shop is a trade, which
+    // cancels the dig, so a shop could never be broken by hitting it. The first hit still behaves exactly as before
+    // (plus a hint); the second hit on the same shop skips the interaction, so the dig is not cancelled and the block
+    // breaks (BlockListener removes the shop: chest = as before, sign = like /qs remove). Survival, DELETE-allowed only.
+    final Shop boxmcShop = shopSearched.getKey();
+    if(event.getAction() == Action.LEFT_CLICK_BLOCK && boxmcShop != null
+       && event.getPlayer().getGameMode() == GameMode.SURVIVAL
+       && boxmcShop.playerAuthorize(event.getPlayer().getUniqueId(), BuiltInShopPermission.DELETE)) {
+      if(BlockListener.boxmcSecondHit(event.getPlayer(), boxmcShop)) {
+        return;
+      }
+      if(!event.getPlayer().isSneaking() || shopSearched.getValue() == InteractionClick.SIGN) {
+        MsgUtil.sendDirectMessage(event.getPlayer(), Component.text("Hit your shop again within 10 seconds to break it.", NamedTextColor.YELLOW));
+      }
     }
 
     final Optional<InteractionType> interactionType = plugin.getInteractionManager().interaction(event, shopSearched.getValue());

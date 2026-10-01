@@ -6,14 +6,12 @@ import com.ghostchu.quickshop.api.shop.Shop;
 import com.ghostchu.quickshop.api.shop.ShopAction;
 import com.ghostchu.quickshop.api.shop.permission.BuiltInShopPermission;
 import com.ghostchu.quickshop.obj.QUserImpl;
-import com.ghostchu.quickshop.util.MsgUtil;
 import com.ghostchu.quickshop.util.Util;
 import com.ghostchu.quickshop.util.logger.Log;
 import com.ghostchu.quickshop.util.logging.container.ShopRemoveLog;
 import com.ghostchu.simplereloadlib.ReloadResult;
 import com.ghostchu.simplereloadlib.ReloadStatus;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -52,10 +50,41 @@ public class BlockListener extends AbstractProtectionListener {
   private boolean updateSignWhenInventoryMoving;
 
   /**
-   * boxmc: last shop-sign break attempt per player (shop id, epoch millis), for the break-twice removal.
+   * boxmc: "hit your own shop twice within 10 seconds to break it". Per player: {shop id, first hit epoch ms, break
+   * allowed until epoch ms}. Written by {@link PlayerListener} on a survival left-click of a shop the player may DELETE.
    */
-  private final Map<UUID, Map.Entry<Long, Long>> boxmcSignBreakAttempts = new ConcurrentHashMap<>();
-  private static final long BOXMC_SIGN_BREAK_WINDOW_MS = 10_000L;
+  private static final Map<UUID, long[]> BOXMC_BREAK_ARM = new ConcurrentHashMap<>();
+  private static final long BOXMC_BREAK_WINDOW_MS = 10_000L;
+  private static final long BOXMC_BREAK_DIG_MS = 30_000L;
+
+  /**
+   * boxmc: record a hit on {@code shop}. Returns true when it is the second hit on the same shop within 10 seconds of
+   * the first: the caller must then let the click through (no trade, not cancelled) so the dig can break the block.
+   */
+  public static boolean boxmcSecondHit(@NotNull final Player p, @NotNull final Shop shop) {
+
+    final long now = System.currentTimeMillis();
+    final long[] arm = BOXMC_BREAK_ARM.get(p.getUniqueId());
+    if(arm != null && arm[0] == shop.getShopId() && now - arm[1] <= BOXMC_BREAK_WINDOW_MS) {
+      arm[2] = now + BOXMC_BREAK_DIG_MS;
+      return true;
+    }
+    BOXMC_BREAK_ARM.put(p.getUniqueId(), new long[]{shop.getShopId(), now, 0L});
+    return false;
+  }
+
+  /**
+   * boxmc: true (once) when this player's second hit on {@code shop} was let through and the dig is still in time.
+   */
+  private static boolean boxmcBreakAllowed(@NotNull final Player p, @NotNull final Shop shop) {
+
+    final long[] arm = BOXMC_BREAK_ARM.get(p.getUniqueId());
+    if(arm == null || arm[0] != shop.getShopId() || System.currentTimeMillis() > arm[2]) {
+      return false;
+    }
+    BOXMC_BREAK_ARM.remove(p.getUniqueId());
+    return true;
+  }
 
   public BlockListener(@NotNull final QuickShop plugin) {
 
@@ -171,26 +200,17 @@ public class BlockListener extends AbstractProtectionListener {
       if(getPlugin().getConfig().getBoolean("shop.allow-owner-break-shop-sign") && p.getUniqueId().equals(shop.getOwner().getUniqueId())) {
         return;
       }
-      // boxmc: the owner (or anyone the shop lets DELETE) can remove the shop from its sign by breaking the sign twice
-      // within 10 seconds. The first break only warns; the second deletes the shop like /qs remove does (the signs go,
-      // the container and its contents stay). Everyone else stays blocked exactly as before.
-      if(shop.playerAuthorize(p.getUniqueId(), BuiltInShopPermission.DELETE)) {
+      // boxmc: the owner's second hit within 10 s was let through (PlayerListener), so this sign break removes the shop
+      // like /qs remove does: the signs go, the container and its contents stay. Everyone else stays blocked as before.
+      if(boxmcBreakAllowed(p, shop)) {
         e.setCancelled(true);
-        final long now = System.currentTimeMillis();
-        final Map.Entry<Long, Long> last = boxmcSignBreakAttempts.get(p.getUniqueId());
-        if(last != null && now - last.getValue() <= BOXMC_SIGN_BREAK_WINDOW_MS && last.getKey() == shop.getShopId()) {
-          boxmcSignBreakAttempts.remove(p.getUniqueId());
-          final Info action = super.getPlugin().getShopManager().getInteractiveManager().get(p.getUniqueId());
-          if(action != null) {
-            action.setAction(ShopAction.CANCELLED);
-          }
-          plugin.logEvent(new ShopRemoveLog(QUserImpl.createFullFilled(p), "BlockBreak(sign twice)", shop.saveToInfoStorage()));
-          plugin.getShopManager().deleteShop(shop);
-          plugin.text().of(p, "success-removed-shop").send();
-          return;
+        final Info action = super.getPlugin().getShopManager().getInteractiveManager().get(p.getUniqueId());
+        if(action != null) {
+          action.setAction(ShopAction.CANCELLED);
         }
-        boxmcSignBreakAttempts.put(p.getUniqueId(), Map.entry(shop.getShopId(), now));
-        MsgUtil.sendDirectMessage(p, Component.text("Break this sign again within 10 seconds to remove your shop.", NamedTextColor.YELLOW));
+        plugin.logEvent(new ShopRemoveLog(QUserImpl.createFullFilled(p), "BlockBreak(sign, hit twice)", shop.saveToInfoStorage()));
+        plugin.getShopManager().deleteShop(shop);
+        plugin.text().of(p, "success-removed-shop").send();
         return;
       }
       Log.debug("Player cannot break the shop information sign.");

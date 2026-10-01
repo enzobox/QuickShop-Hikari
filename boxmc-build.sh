@@ -8,7 +8,8 @@
 #         patched sources below replaced (boxmc.1 = CommandHandler only; boxmc.2 adds BlockListener + SubCommand_Staff):
 #           com/ghostchu/quickshop/api/command/CommandHandler.class            (BUG-0655 unscaled-eye fallback)
 #           com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.class   (/qs staff uses that fallback after a miss)
-#           com/ghostchu/quickshop/listener/BlockListener.class                (owner breaks the shop sign twice in 10 s = remove)
+#           com/ghostchu/quickshop/listener/BlockListener.class                (2nd hit within 10 s on a shop SIGN = remove)
+#           com/ghostchu/quickshop/listener/PlayerListener.class (+ $ClickType) (2nd hit within 10 s is not a trade/cancel)
 #
 # Why a binary patch and not a full reactor build: the full build re-shades ~20 libraries and stamps new
 # timestamps/BUILDINFO, so every byte of the jar would differ from what has run on production since 2026-08-01.
@@ -26,15 +27,30 @@ GOT=$(sha256sum "$UP" | cut -d' ' -f1)
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRCS=(quickshop-api/src/main/java/com/ghostchu/quickshop/api/command/CommandHandler.java
       quickshop-bukkit/src/main/java/com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.java
-      quickshop-bukkit/src/main/java/com/ghostchu/quickshop/listener/BlockListener.java)
+      quickshop-bukkit/src/main/java/com/ghostchu/quickshop/listener/BlockListener.java
+      quickshop-bukkit/src/main/java/com/ghostchu/quickshop/listener/PlayerListener.java)
 CLSS=(com/ghostchu/quickshop/api/command/CommandHandler.class
       com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.class
-      com/ghostchu/quickshop/listener/BlockListener.class)
+      com/ghostchu/quickshop/listener/BlockListener.class
+      com/ghostchu/quickshop/listener/PlayerListener.class
+      'com/ghostchu/quickshop/listener/PlayerListener$ClickType.class')
 mkdir -p "$OUT"; WORK=$(mktemp -d)
-trap 'for c in "${CLSS[@]}"; do rm -f "$WORK/classes/$c"; done; find "$WORK" -depth -type d -empty -delete 2>/dev/null || true' EXIT
+trap 'for c in "${CLSS[@]}"; do rm -f "$WORK/classes/$c"; done; for src in "${SRCS[@]}"; do rm -f "$WORK/src/$src"; done; find "$WORK" -depth -type d -empty -delete 2>/dev/null || true' EXIT
 mkdir -p "$WORK/classes"
+# The upstream build SHADES and RELOCATES some libraries (pom.xml maven-shade relocations), so a source compiled against
+# the jar must use the relocated names. Mirror the one relocation the patched sources need (net.tnemc -> ...shade.tne,
+# PlayerListener's MenuManager) in a temp copy, and refuse if a patched source touches any other relocated package.
+mkdir -p "$WORK/src"; SRCFILES=()
+for src in "${SRCS[@]}"; do
+  if command grep -a -n -E '\b(cc\.carm\.lib|com\.tcoded|io\.papermc\.lib\.|de\.tr7zw\.changeme\.nbtapi|org\.bstats|de\.themoep\.minedown\.|com\.alessiodp\.libby\.|com\.mohistmc\.)' "$HERE/$src"; then
+    echo "REFUSING: $src uses a relocated package this script does not mirror" >&2; exit 1
+  fi
+  mkdir -p "$WORK/src/$(dirname "$src")"
+  sed -E 's/\bnet\.tnemc\./com.ghostchu.quickshop.shade.tne./g' "$HERE/$src" > "$WORK/src/$src"
+  SRCFILES+=("$WORK/src/$src")
+done
 # The deployed classes are major version 65 (Java 21): compile to the same level.
-javac --release 21 -nowarn -proc:none -cp "$CP:$UP" -d "$WORK/classes" "${SRCS[@]/#/$HERE/}"
+javac --release 21 -nowarn -proc:none -cp "$CP:$UP" -d "$WORK/classes" "${SRCFILES[@]}"
 # The compile must produce exactly these classes (no nested/anonymous classes the jar does not already have).
 N=$(cd "$WORK/classes" && find . -name '*.class' | wc -l)
 [ "$N" = "${#CLSS[@]}" ] || { echo "expected ${#CLSS[@]} compiled classes, got $N" >&2; exit 1; }
