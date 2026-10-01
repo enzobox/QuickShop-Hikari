@@ -61,9 +61,40 @@ public interface CommandHandler<T extends CommandSender> {
         }
         return shop;
       }
-      return null;
+      // boxmc (BUG-0655): the ray above starts at the SERVER-side eye. A Bedrock player whose
+      // minecraft:scale attribute is not 1 (EssencePowers axolotl 0.5, frog 0.7, dragon/giraffe 1.2)
+      // has a server eye far from where his client camera actually is (Geyser keeps the camera at
+      // normal height), so he aims at the shop sign while the server ray passes under/over the shop.
+      // Only when the normal ray found nothing, retry once from the unscaled eye height.
+      return boxmcLookingShopFromUnscaledEye(player);
     }
     throw new IllegalStateException("Sender is not player");
+  }
+
+  /**
+   * boxmc (BUG-0655) fallback for {@link #getLookingShop(CommandSender)}: when the player's current eye height differs
+   * from the vanilla unscaled eye height (1.62 standing, 1.27 sneaking) by more than 0.05 blocks, cast one more ray from
+   * the same feet location at the unscaled eye height, along the same look direction, max 10 blocks, with the same exact
+   * block shop lookup. Returns null when the eye height is (near) vanilla, so unscaled players see no behaviour change.
+   * No Floodgate dependency: a scaled Java player only ever reaches this when his own correct ray found nothing.
+   */
+  @Nullable
+  private static Shop boxmcLookingShopFromUnscaledEye(@NotNull final Player player) {
+
+    final double unscaledEye = player.isSneaking()? 1.27D : 1.62D;
+    if(Math.abs(player.getEyeHeight() - unscaledEye) <= 0.05D) {
+      return null;
+    }
+    // getLocation() carries the same yaw/pitch as the eye location; the yOffset lifts the start to the unscaled eye.
+    final BlockIterator bIt = new BlockIterator(player.getLocation(), unscaledEye, 10);
+    while(bIt.hasNext()) {
+      final Block b = bIt.next();
+      final Shop shop = QuickShopAPI.getInstance().getShopManager().getShop(b.getLocation());
+      if(shop != null) {
+        return shop;
+      }
+    }
+    return null;
   }
 
   default @NotNull CompletableFuture<@NotNull List<Shop>> getTaggedShops(final T sender, @NotNull final String tag) {
