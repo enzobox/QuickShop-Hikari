@@ -43,6 +43,25 @@ public class SubCommand_Staff implements CommandHandler<Player> {
              && !plugin.perm().hasPermission(sender, "quickshop.other.staff"))) {
         continue;
       }
+      boxmcRun(sender, parser, shop);
+      return;
+    }
+    // boxmc (BUG-0655): the ray above starts at the SERVER-side eye, which is far from a scaled Bedrock player's camera.
+    // getLookingShop() repeats that ray and then retries from the unscaled eye height; use it only after a miss.
+    final Shop fallback = getLookingShop(sender);
+    if(fallback != null
+       && (fallback.playerAuthorize(sender.getUniqueId(), BuiltInShopPermission.MANAGEMENT_PERMISSION)
+           || plugin.perm().hasPermission(sender, "quickshop.other.staff"))) {
+      boxmcRun(sender, parser, fallback);
+      return;
+    }
+    //no match shop
+    plugin.text().of(sender, "not-looking-at-shop").send();
+  }
+
+  private void boxmcRun(@NotNull final Player sender, @NotNull final CommandParser parser, @NotNull final Shop shop) {
+
+    {
       switch(parser.getArgs().size()) {
         case 1 -> {
           switch(parser.getArgs().getFirst()) {
@@ -106,8 +125,6 @@ public class SubCommand_Staff implements CommandHandler<Player> {
         }
       }
     }
-    //no match shop
-    plugin.text().of(sender, "not-looking-at-shop").send();
   }
 
   @NotNull

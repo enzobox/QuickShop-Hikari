@@ -4,8 +4,11 @@
 # Input : the exact upstream jar BoxMC runs, QuickShop-Hikari-6.3.0.0-SNAPSHOT-12.jar
 #         (upstream commit 2a67c8f94b9f1aa06dde8093028a29b30b4f0010, per the jar's own BUILDINFO),
 #         sha256 b7ea124cc2bf10dedc2a436482009008f2e1c2301c967d613f39071601d6ba58, 4,691,983 bytes.
-# Output: QuickShop-Hikari-6.3.0.0-SNAPSHOT-12-boxmc.1.jar = that jar with ONLY
-#         com/ghostchu/quickshop/api/command/CommandHandler.class replaced by the one compiled from this branch.
+# Output: QuickShop-Hikari-6.3.0.0-SNAPSHOT-12-boxmc.2.jar = that jar with ONLY the classes compiled from the
+#         patched sources below replaced (boxmc.1 = CommandHandler only; boxmc.2 adds BlockListener + SubCommand_Staff):
+#           com/ghostchu/quickshop/api/command/CommandHandler.class            (BUG-0655 unscaled-eye fallback)
+#           com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.class   (/qs staff uses that fallback after a miss)
+#           com/ghostchu/quickshop/listener/BlockListener.class                (owner breaks the shop sign twice in 10 s = remove)
 #
 # Why a binary patch and not a full reactor build: the full build re-shades ~20 libraries and stamps new
 # timestamps/BUILDINFO, so every byte of the jar would differ from what has run on production since 2026-08-01.
@@ -21,16 +24,22 @@ WANT=b7ea124cc2bf10dedc2a436482009008f2e1c2301c967d613f39071601d6ba58
 GOT=$(sha256sum "$UP" | cut -d' ' -f1)
 [ "$GOT" = "$WANT" ] || { echo "REFUSING: input jar sha256 $GOT != $WANT" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
-SRC=quickshop-api/src/main/java/com/ghostchu/quickshop/api/command/CommandHandler.java
-CLS=com/ghostchu/quickshop/api/command/CommandHandler.class
-mkdir -p "$OUT"; WORK=$(mktemp -d); trap 'rm -f "$WORK"/classes/$CLS; rmdir -p "$WORK"/classes/com/ghostchu/quickshop/api/command 2>/dev/null || true' EXIT
+SRCS=(quickshop-api/src/main/java/com/ghostchu/quickshop/api/command/CommandHandler.java
+      quickshop-bukkit/src/main/java/com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.java
+      quickshop-bukkit/src/main/java/com/ghostchu/quickshop/listener/BlockListener.java)
+CLSS=(com/ghostchu/quickshop/api/command/CommandHandler.class
+      com/ghostchu/quickshop/command/subcommand/SubCommand_Staff.class
+      com/ghostchu/quickshop/listener/BlockListener.class)
+mkdir -p "$OUT"; WORK=$(mktemp -d)
+trap 'for c in "${CLSS[@]}"; do rm -f "$WORK/classes/$c"; done; find "$WORK" -depth -type d -empty -delete 2>/dev/null || true' EXIT
 mkdir -p "$WORK/classes"
 # The deployed classes are major version 65 (Java 21): compile to the same level.
-javac --release 21 -nowarn -proc:none -cp "$CP:$UP" -d "$WORK/classes" "$HERE/$SRC"
-# A compile of this one file must produce exactly this one class (no nested/anonymous classes).
+javac --release 21 -nowarn -proc:none -cp "$CP:$UP" -d "$WORK/classes" "${SRCS[@]/#/$HERE/}"
+# The compile must produce exactly these classes (no nested/anonymous classes the jar does not already have).
 N=$(cd "$WORK/classes" && find . -name '*.class' | wc -l)
-[ "$N" = 1 ] || { echo "expected 1 compiled class, got $N" >&2; exit 1; }
-JAR="$OUT/QuickShop-Hikari-6.3.0.0-SNAPSHOT-12-boxmc.1.jar"
+[ "$N" = "${#CLSS[@]}" ] || { echo "expected ${#CLSS[@]} compiled classes, got $N" >&2; exit 1; }
+for c in "${CLSS[@]}"; do [ -f "$WORK/classes/$c" ] || { echo "missing compiled $c" >&2; exit 1; }; unzip -l "$UP" "$c" >/dev/null || { echo "$c is not in the upstream jar" >&2; exit 1; }; done
+JAR="$OUT/QuickShop-Hikari-6.3.0.0-SNAPSHOT-12-boxmc.2.jar"
 cp "$UP" "$JAR"
-(cd "$WORK/classes" && zip -q "$JAR" "$CLS")
+(cd "$WORK/classes" && zip -q "$JAR" "${CLSS[@]}")
 echo "built $JAR  $(stat -c %s "$JAR") B  sha256 $(sha256sum "$JAR" | cut -d' ' -f1)"

@@ -6,12 +6,14 @@ import com.ghostchu.quickshop.api.shop.Shop;
 import com.ghostchu.quickshop.api.shop.ShopAction;
 import com.ghostchu.quickshop.api.shop.permission.BuiltInShopPermission;
 import com.ghostchu.quickshop.obj.QUserImpl;
+import com.ghostchu.quickshop.util.MsgUtil;
 import com.ghostchu.quickshop.util.Util;
 import com.ghostchu.quickshop.util.logger.Log;
 import com.ghostchu.quickshop.util.logging.container.ShopRemoveLog;
 import com.ghostchu.simplereloadlib.ReloadResult;
 import com.ghostchu.simplereloadlib.ReloadStatus;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -34,6 +36,10 @@ import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 import static com.ghostchu.quickshop.shop.SimpleShopManager.CHEST_SHOP;
 
 /**
@@ -44,6 +50,12 @@ import static com.ghostchu.quickshop.shop.SimpleShopManager.CHEST_SHOP;
 public class BlockListener extends AbstractProtectionListener {
 
   private boolean updateSignWhenInventoryMoving;
+
+  /**
+   * boxmc: last shop-sign break attempt per player (shop id, epoch millis), for the break-twice removal.
+   */
+  private final Map<UUID, Map.Entry<Long, Long>> boxmcSignBreakAttempts = new ConcurrentHashMap<>();
+  private static final long BOXMC_SIGN_BREAK_WINDOW_MS = 10_000L;
 
   public BlockListener(@NotNull final QuickShop plugin) {
 
@@ -157,6 +169,28 @@ public class BlockListener extends AbstractProtectionListener {
       }
       //Allow Shop owner break the shop sign(for sign replacement)
       if(getPlugin().getConfig().getBoolean("shop.allow-owner-break-shop-sign") && p.getUniqueId().equals(shop.getOwner().getUniqueId())) {
+        return;
+      }
+      // boxmc: the owner (or anyone the shop lets DELETE) can remove the shop from its sign by breaking the sign twice
+      // within 10 seconds. The first break only warns; the second deletes the shop like /qs remove does (the signs go,
+      // the container and its contents stay). Everyone else stays blocked exactly as before.
+      if(shop.playerAuthorize(p.getUniqueId(), BuiltInShopPermission.DELETE)) {
+        e.setCancelled(true);
+        final long now = System.currentTimeMillis();
+        final Map.Entry<Long, Long> last = boxmcSignBreakAttempts.get(p.getUniqueId());
+        if(last != null && now - last.getValue() <= BOXMC_SIGN_BREAK_WINDOW_MS && last.getKey() == shop.getShopId()) {
+          boxmcSignBreakAttempts.remove(p.getUniqueId());
+          final Info action = super.getPlugin().getShopManager().getInteractiveManager().get(p.getUniqueId());
+          if(action != null) {
+            action.setAction(ShopAction.CANCELLED);
+          }
+          plugin.logEvent(new ShopRemoveLog(QUserImpl.createFullFilled(p), "BlockBreak(sign twice)", shop.saveToInfoStorage()));
+          plugin.getShopManager().deleteShop(shop);
+          plugin.text().of(p, "success-removed-shop").send();
+          return;
+        }
+        boxmcSignBreakAttempts.put(p.getUniqueId(), Map.entry(shop.getShopId(), now));
+        MsgUtil.sendDirectMessage(p, Component.text("Break this sign again within 10 seconds to remove your shop.", NamedTextColor.YELLOW));
         return;
       }
       Log.debug("Player cannot break the shop information sign.");
