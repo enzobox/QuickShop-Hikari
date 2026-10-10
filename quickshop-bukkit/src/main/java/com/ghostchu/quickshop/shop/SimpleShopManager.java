@@ -432,6 +432,11 @@ public class SimpleShopManager extends AbstractShopManager implements ShopManage
         }
         case SHOP_NO_SPACE -> {
 
+          // boxmc: a full shop says so, not "only has room for 0 more"
+          if(space <= 0) {
+            plugin.text().of(buyer, "purchase-out-of-space", shop.ownerName()).send();
+            return false;
+          }
           plugin.text().of(buyer, "shop-has-no-space", Component.text(space), Util.getItemStackName(shop.getItem())).send();
           return false;
         }
@@ -1344,7 +1349,7 @@ public class SimpleShopManager extends AbstractShopManager implements ShopManage
     if(amount < 1) { // typed 'all' but the auto set amount is 0
       if(shopHaveSpaces == 0) {
         // when typed 'all' but the shop doesn't have any empty space
-        plugin.text().of(p, "shop-has-no-space", Component.text(shopHaveSpaces), Util.getItemStackName(shop.getItem())).send();
+        plugin.text().of(p, "purchase-out-of-space", shop.ownerName()).send(); // boxmc: was "only has room for 0 more"
         return 0;
       }
       if(ownerCanAfford == 0 && (!shop.isUnlimited() || payUnlimitedShopOwner)) {

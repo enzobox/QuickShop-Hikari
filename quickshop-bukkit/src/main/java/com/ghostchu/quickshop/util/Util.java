@@ -617,8 +617,11 @@ public class Util {
       for(final ItemStack iStack : inv) {
         if(iStack == null || iStack.getType() == Material.AIR) {
           space += itemMaxStackSize;
-        } else if(shop.matches(iStack)) {
-          space += iStack.getAmount() >= itemMaxStackSize? 0 : itemMaxStackSize - iStack.getAmount();
+        } else if(shop.matches(iStack) && iStack.isSimilar(item)) {
+          // boxmc: addItem only tops up a SIMILAR stack, up to that stack's own max_stack_size. A matching key with
+          // another serial or max_stack_size 1 takes no more, so it adds no space ("Buying 1701" on a full barrel).
+          final int slotMax = Math.min(itemMaxStackSize, iStack.getMaxStackSize());
+          space += iStack.getAmount() >= slotMax? 0 : slotMax - iStack.getAmount();
         }
       }
       return space / item.getAmount();
@@ -670,8 +673,10 @@ public class Util {
       for(final ItemStack iStack : inv) {
         if(iStack == null || iStack.getType() == Material.AIR) {
           space += itemMaxStackSize;
-        } else if(matcher.matches(item, iStack)) {
-          space += iStack.getAmount() >= itemMaxStackSize? 0 : itemMaxStackSize - iStack.getAmount();
+        } else if(matcher.matches(item, iStack) && iStack.isSimilar(item)) {
+          // boxmc: see countSpace(InventoryWrapper, Shop).
+          final int slotMax = Math.min(itemMaxStackSize, iStack.getMaxStackSize());
+          space += iStack.getAmount() >= slotMax? 0 : slotMax - iStack.getAmount();
         }
       }
       return space / item.getAmount();
